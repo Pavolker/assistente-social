@@ -25,6 +25,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import Markdown from 'react-markdown';
 import { chatWithGemini, researchTopic } from './services/gemini';
+import { getTasks, saveTasks } from './services/tasks';
 import { STUDY_TOPICS, DAILY_QUOTES, StudyTask } from './constants';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -36,19 +37,30 @@ function cn(...inputs: ClassValue[]) {
 export default function App() {
   const [activeTab, setActiveTab] = useState<'home' | 'chat' | 'research' | 'schedule'>('home');
   const [quote, setQuote] = useState(DAILY_QUOTES[0]);
-  const [tasks, setTasks] = useState<StudyTask[]>([
-    { id: '1', title: 'Revisar LOAS Art. 20', topic: 'LOAS', date: '2026-03-18', completed: false },
-    { id: '2', title: 'Ler sobre Projeto Ético-Político', topic: 'Ética', date: '2026-03-19', completed: true },
-    { id: '3', title: 'Estudar ECA - Direitos Fundamentais', topic: 'ECA', date: '2026-03-20', completed: false },
-  ]);
+  const [tasks, setTasks] = useState<StudyTask[]>([]);
+
+  useEffect(() => {
+    const loadTasks = async () => {
+      const loadedTasks = await getTasks();
+      setTasks(loadedTasks);
+    };
+    loadTasks();
+  }, []);
 
   useEffect(() => {
     const randomQuote = DAILY_QUOTES[Math.floor(Math.random() * DAILY_QUOTES.length)];
     setQuote(randomQuote);
   }, []);
 
-  const toggleTask = (id: string) => {
-    setTasks(tasks.map(t => t.id === id ? { ...t, completed: !t.completed } : t));
+  const toggleTask = async (id: string) => {
+    const newTasks = tasks.map(t => t.id === id ? { ...t, completed: !t.completed } : t);
+    setTasks(newTasks);
+    try {
+      await saveTasks(newTasks);
+    } catch (error) {
+      console.error('Failed to save tasks:', error);
+      // Optionally revert on error
+    }
   };
 
   return (
