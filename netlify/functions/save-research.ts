@@ -63,7 +63,7 @@ export async function handler(event, context) {
       await pool.query(
         `INSERT INTO doc_chunks (document_id, chunk_index, content, embedding)
          VALUES ($1, $2, $3, $4)`,
-        [docId, i, chunks[i], embedding]
+        [docId, i, chunks[i], JSON.stringify(embedding)]
       );
     }
 
