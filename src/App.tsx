@@ -70,10 +70,8 @@ export default function App() {
       {/* Sidebar */}
       <nav className="w-20 md:w-64 bg-brand-paper border-r border-stone-200 flex flex-col">
         <div className="p-6 flex items-center gap-3">
-          <div className="w-10 h-10 bg-brand-primary rounded-full flex items-center justify-center text-white">
-            <Scale size={20} />
-          </div>
-          <h1 className="hidden md:block text-xl font-serif font-bold text-brand-primary">AS Pro</h1>
+          <img src="/centauro.gif" alt="Sistema Centauro" className="w-10 h-10 rounded-full" />
+          <h1 className="hidden md:block text-xl font-serif font-bold text-brand-primary">Sistema Centauro</h1>
         </div>
 
         <div className="flex-1 px-3 space-y-2 mt-4">
