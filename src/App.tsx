@@ -26,6 +26,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import Markdown from 'react-markdown';
 import { chatWithGemini, researchTopic } from './services/gemini';
 import { getTasks, saveTasks } from './services/tasks';
+import { saveResearch } from './services/save-research';
+import { getDocuments } from './services/documents';
 import { STUDY_TOPICS, DAILY_QUOTES, StudyTask } from './constants';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -35,7 +37,7 @@ function cn(...inputs: ClassValue[]) {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'home' | 'chat' | 'research' | 'schedule'>('home');
+  const [activeTab, setActiveTab] = useState<'home' | 'chat' | 'research' | 'schedule' | 'documents'>('home');
   const [quote, setQuote] = useState(DAILY_QUOTES[0]);
   const [tasks, setTasks] = useState<StudyTask[]>([]);
 
@@ -98,6 +100,12 @@ export default function App() {
             onClick={() => setActiveTab('schedule')} 
             icon={<Calendar size={20} />} 
             label="Cronograma" 
+          />
+          <NavItem 
+            active={activeTab === 'documents'} 
+            onClick={() => setActiveTab('documents')} 
+            icon={<Library size={20} />} 
+            label="Documentos" 
           />
         </div>
 
@@ -215,6 +223,7 @@ export default function App() {
             {activeTab === 'chat' && <AIChatView />}
             {activeTab === 'research' && <ResearchView />}
             {activeTab === 'schedule' && <ScheduleView tasks={tasks} setTasks={setTasks} toggleTask={toggleTask} />}
+            {activeTab === 'documents' && <DocumentsView />}
           </AnimatePresence>
         </div>
       </main>
@@ -353,6 +362,7 @@ function ResearchView() {
   const [query, setQuery] = useState('');
   const [result, setResult] = useState<{ text: string; sources: any[] } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   const handleSearch = async () => {
     if (!query.trim() || isLoading) return;
@@ -364,6 +374,20 @@ function ResearchView() {
       console.error(error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!result || isSaving) return;
+    setIsSaving(true);
+    try {
+      await saveResearch(query, result.text);
+      alert('Pesquisa armazenada com sucesso!');
+    } catch (error) {
+      console.error(error);
+      alert('Erro ao armazenar pesquisa.');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -431,6 +455,16 @@ function ResearchView() {
               </div>
             </div>
           )}
+          <div className="pt-6 border-t border-stone-100 flex justify-end">
+            <button 
+              onClick={handleSave}
+              disabled={isSaving}
+              className="bg-brand-primary text-white px-6 py-3 rounded-xl font-medium hover:bg-brand-primary/90 transition-colors disabled:opacity-50 flex items-center gap-2"
+            >
+              {isSaving ? <Loader2 size={16} className="animate-spin" /> : <Library size={16} />}
+              <span>Armazenar Pesquisa</span>
+            </button>
+          </div>
         </motion.div>
       )}
     </motion.div>
@@ -530,6 +564,58 @@ function ScheduleView({ tasks, setTasks, toggleTask }: { tasks: StudyTask[]; set
           ))}
         </div>
       </div>
+    </motion.div>
+  );
+}
+import { getDocuments } from './services/documents';
+
+function DocumentsView() {
+  const [documents, setDocuments] = useState<any[]>([]);
+  const [selectedDoc, setSelectedDoc] = useState<any>(null);
+
+  useEffect(() => {
+    const loadDocuments = async () => {
+      const docs = await getDocuments();
+      setDocuments(docs);
+    };
+    loadDocuments();
+  }, []);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="space-y-6"
+    >
+      <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm">
+        <h3 className="text-2xl font-serif font-bold mb-6">Documentos Armazenados</h3>
+        <div className="space-y-3">
+          {documents.map((doc) => (
+            <button
+              key={doc.id}
+              onClick={() => setSelectedDoc(doc)}
+              className="w-full text-left p-4 rounded-xl bg-stone-50 border border-stone-100 hover:border-brand-primary/20 transition-colors"
+            >
+              <p className="font-medium">{doc.filename}</p>
+              <p className="text-sm text-stone-500">{new Date(doc.uploaded_at).toLocaleDateString()}</p>
+            </button>
+          ))}
+          {documents.length === 0 && (
+            <p className="text-stone-500 text-center py-8">Nenhum documento armazenado ainda.</p>
+          )}
+        </div>
+      </div>
+
+      {selectedDoc && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm"
+        >
+          <h4 className="text-xl font-serif font-bold mb-4">{selectedDoc.filename}</h4>
+          <p className="text-stone-600">Documento selecionado. (Conteúdo pode ser exibido aqui futuramente)</p>
+        </motion.div>
+      )}
     </motion.div>
   );
 }
