@@ -441,7 +441,7 @@ function ScheduleView({ tasks, setTasks, toggleTask }: { tasks: StudyTask[]; set
   const [newTask, setNewTask] = useState('');
   const [selectedTopic, setSelectedTopic] = useState(STUDY_TOPICS[0]);
 
-  const addTask = () => {
+  const addTask = async () => {
     if (!newTask.trim()) return;
     const task: StudyTask = {
       id: Date.now().toString(),
@@ -450,8 +450,14 @@ function ScheduleView({ tasks, setTasks, toggleTask }: { tasks: StudyTask[]; set
       date: new Date().toISOString().split('T')[0],
       completed: false
     };
-    setTasks([task, ...tasks]);
+    const newTasks = [task, ...tasks];
+    setTasks(newTasks);
     setNewTask('');
+    try {
+      await saveTasks(newTasks);
+    } catch (error) {
+      console.error('Failed to save tasks:', error);
+    }
   };
 
   return (
