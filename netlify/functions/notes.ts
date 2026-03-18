@@ -4,7 +4,23 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
+// Initialize notes table if not exists
+async function initNotesTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS notes (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      updated_at TIMESTAMPTZ DEFAULT now()
+    )
+  `);
+}
+
 export async function handler(event, context) {
+  // Ensure table exists
+  await initNotesTable();
+
   const { httpMethod, path, body } = event;
   const id = path.split('/').pop(); // Extract ID from path for single resource operations
 
