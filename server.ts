@@ -56,6 +56,15 @@ async function initDb() {
         created_at TIMESTAMPTZ DEFAULT now()
       );
     `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS notes (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT now(),
+        updated_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
     console.log('✅ Database initialized');
   } catch (err) {
     console.error('❌ DB init error:', err);
@@ -282,6 +291,93 @@ app.post('/api/rag/query', async (req, res) => {
     res.json({ answer, sources: rows });
   } catch (err: any) {
     console.error('RAG query error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Notes endpoints - CRUD for study notes
+ */
+
+// Get all notes
+app.get('/api/notes', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM notes ORDER BY updated_at DESC'
+    );
+    res.json(rows);
+  } catch (err: any) {
+    console.error('Get notes error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get a single note by ID
+app.get('/api/notes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rows } = await pool.query('SELECT * FROM notes WHERE id = $1', [id]);
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+    res.json(rows[0]);
+  } catch (err: any) {
+    console.error('Get note error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create a new note
+app.post('/api/notes', async (req, res) => {
+  try {
+    const { title, content } = req.body;
+    if (!title || !content) {
+      return res.status(400).json({ error: 'Title and content are required' });
+    }
+    const { rows } = await pool.query(
+      'INSERT INTO notes (title, content) VALUES ($1, $2) RETURNING *',
+      [title, content]
+    );
+    res.json(rows[0]);
+  } catch (err: any) {
+    console.error('Create note error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update an existing note
+app.put('/api/notes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, content } = req.body;
+    if (!title || !content) {
+      return res.status(400).json({ error: 'Title and content are required' });
+    }
+    const { rows } = await pool.query(
+      'UPDATE notes SET title = $1, content = $2, updated_at = now() WHERE id = $3 RETURNING *',
+      [title, content, id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+    res.json(rows[0]);
+  } catch (err: any) {
+    console.error('Update note error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a note
+app.delete('/api/notes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rowCount } = await pool.query('DELETE FROM notes WHERE id = $1', [id]);
+    if (rowCount === 0) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('Delete note error:', err);
     res.status(500).json({ error: err.message });
   }
 });

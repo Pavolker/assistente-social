@@ -4,23 +4,26 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  BookOpen, 
-  MessageSquare, 
-  Calendar, 
-  Search, 
-  Quote as QuoteIcon, 
-  CheckCircle2, 
-  Circle, 
-  Send, 
-  User, 
+import {
+  BookOpen,
+  MessageSquare,
+  Calendar,
+  Search,
+  Quote as QuoteIcon,
+  CheckCircle2,
+  Circle,
+  Send,
+  User,
   Bot,
   ChevronRight,
   Library,
   Scale,
   Heart,
   ExternalLink,
-  Loader2
+  Loader2,
+  FileEdit,
+  Trash2,
+  Plus
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Markdown from 'react-markdown';
@@ -28,6 +31,7 @@ import { chatWithGemini, researchTopic } from './services/gemini';
 import { getTasks, saveTasks } from './services/tasks';
 import { saveResearch } from './services/save-research';
 import { getDocuments } from './services/documents';
+import { getNotes, createNote, updateNote, deleteNote, type Note } from './services/notes';
 import { STUDY_TOPICS, DAILY_QUOTES, StudyTask } from './constants';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -37,7 +41,7 @@ function cn(...inputs: ClassValue[]) {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'home' | 'chat' | 'research' | 'schedule' | 'documents'>('home');
+  const [activeTab, setActiveTab] = useState<'home' | 'chat' | 'research' | 'schedule' | 'documents' | 'notes'>('home');
   const [quote, setQuote] = useState(DAILY_QUOTES[0]);
   const [tasks, setTasks] = useState<StudyTask[]>([]);
 
@@ -99,11 +103,17 @@ export default function App() {
             icon={<Calendar size={20} />} 
             label="Cronograma" 
           />
-          <NavItem 
-            active={activeTab === 'documents'} 
-            onClick={() => setActiveTab('documents')} 
-            icon={<Library size={20} />} 
-            label="Documentos" 
+          <NavItem
+            active={activeTab === 'documents'}
+            onClick={() => setActiveTab('documents')}
+            icon={<Library size={20} />}
+            label="Documentos"
+          />
+          <NavItem
+            active={activeTab === 'notes'}
+            onClick={() => setActiveTab('notes')}
+            icon={<FileEdit size={20} />}
+            label="Notas"
           />
         </div>
 
@@ -222,6 +232,7 @@ export default function App() {
             {activeTab === 'research' && <ResearchView />}
             {activeTab === 'schedule' && <ScheduleView tasks={tasks} setTasks={setTasks} toggleTask={toggleTask} />}
             {activeTab === 'documents' && <DocumentsView />}
+            {activeTab === 'notes' && <NotesView />}
           </AnimatePresence>
         </div>
       </main>
@@ -614,6 +625,217 @@ function DocumentsView() {
           <p className="text-stone-600">Documento selecionado. (Conteúdo pode ser exibido aqui futuramente)</p>
         </motion.div>
       )}
+    </motion.div>
+  );
+}
+
+function NotesView() {
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [selectedNote, setSelectedNote] = useState<Note | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [title, setTitle] = useState('');
+  const [content, setContent] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    loadNotes();
+  }, []);
+
+  const loadNotes = async () => {
+    try {
+      const loadedNotes = await getNotes();
+      setNotes(loadedNotes);
+    } catch (error) {
+      console.error('Failed to load notes:', error);
+    }
+  };
+
+  const handleNewNote = () => {
+    setSelectedNote(null);
+    setTitle('');
+    setContent('');
+    setIsEditing(true);
+  };
+
+  const handleSelectNote = (note: Note) => {
+    setSelectedNote(note);
+    setTitle(note.title);
+    setContent(note.content);
+    setIsEditing(false);
+  };
+
+  const handleSave = async () => {
+    if (!title.trim() || !content.trim()) return;
+    setIsLoading(true);
+    try {
+      if (selectedNote) {
+        await updateNote(selectedNote.id, title, content);
+      } else {
+        await createNote(title, content);
+      }
+      await loadNotes();
+      setIsEditing(false);
+      setSelectedNote(null);
+      setTitle('');
+      setContent('');
+    } catch (error) {
+      console.error('Failed to save note:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Tem certeza que deseja excluir esta nota?')) return;
+    try {
+      await deleteNote(id);
+      await loadNotes();
+      setSelectedNote(null);
+      setTitle('');
+      setContent('');
+      setIsEditing(false);
+    } catch (error) {
+      console.error('Failed to delete note:', error);
+    }
+  };
+
+  const handleCancel = () => {
+    setIsEditing(false);
+    if (selectedNote) {
+      setTitle(selectedNote.title);
+      setContent(selectedNote.content);
+    } else {
+      setTitle('');
+      setContent('');
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="space-y-6"
+    >
+      <div className="flex items-center justify-between">
+        <h3 className="text-2xl font-serif font-bold">Minhas Notas</h3>
+        <button
+          onClick={handleNewNote}
+          className="bg-brand-primary text-white px-6 py-3 rounded-xl font-medium hover:bg-brand-primary/90 transition-colors flex items-center gap-2"
+        >
+          <Plus size={20} />
+          <span>Nova Nota</span>
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Notes List */}
+        <div className="lg:col-span-1 space-y-3">
+          <div className="bg-white p-6 rounded-3xl border border-stone-200 shadow-sm">
+            <h4 className="font-serif font-bold mb-4">Todas as Notas</h4>
+            <div className="space-y-2 max-h-[600px] overflow-y-auto">
+              {notes.map((note) => (
+                <button
+                  key={note.id}
+                  onClick={() => handleSelectNote(note)}
+                  className={cn(
+                    "w-full text-left p-4 rounded-xl border transition-colors",
+                    selectedNote?.id === note.id
+                      ? "bg-brand-primary text-white border-brand-primary"
+                      : "bg-stone-50 border-stone-100 hover:border-brand-primary/20"
+                  )}
+                >
+                  <p className={cn("font-medium truncate", selectedNote?.id === note.id ? "text-white" : "text-stone-800")}>
+                    {note.title}
+                  </p>
+                  <p className={cn("text-xs mt-1", selectedNote?.id === note.id ? "text-white/80" : "text-stone-500")}>
+                    {new Date(note.updated_at).toLocaleDateString('pt-BR')}
+                  </p>
+                </button>
+              ))}
+              {notes.length === 0 && (
+                <p className="text-stone-500 text-center py-8">Nenhuma nota criada ainda.</p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Note Editor/Viewer */}
+        <div className="lg:col-span-2">
+          <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm">
+            {isEditing ? (
+              <>
+                <div className="mb-4">
+                  <input
+                    type="text"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    placeholder="Título da nota"
+                    className="w-full text-xl font-serif font-bold border-none focus:outline-none focus:ring-0 placeholder:text-stone-400"
+                  />
+                </div>
+                <textarea
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  placeholder="Escreva suas anotações aqui..."
+                  className="w-full h-[400px] resize-none border-none focus:outline-none focus:ring-0 text-stone-700 leading-relaxed placeholder:text-stone-400"
+                />
+                <div className="flex gap-3 mt-6 pt-6 border-t border-stone-100">
+                  <button
+                    onClick={handleSave}
+                    disabled={isLoading || !title.trim() || !content.trim()}
+                    className="bg-brand-primary text-white px-6 py-3 rounded-xl font-medium hover:bg-brand-primary/90 transition-colors disabled:opacity-50 flex items-center gap-2"
+                  >
+                    {isLoading ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+                    <span>Salvar</span>
+                  </button>
+                  <button
+                    onClick={handleCancel}
+                    className="bg-stone-100 text-stone-700 px-6 py-3 rounded-xl font-medium hover:bg-stone-200 transition-colors"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </>
+            ) : selectedNote ? (
+              <>
+                <div className="flex items-start justify-between mb-6">
+                  <div>
+                    <h4 className="text-2xl font-serif font-bold">{selectedNote.title}</h4>
+                    <p className="text-sm text-stone-500 mt-1">
+                      Criada em {new Date(selectedNote.created_at).toLocaleDateString('pt-BR')}
+                      {selectedNote.updated_at !== selectedNote.created_at && (
+                        <span> • Atualizada em {new Date(selectedNote.updated_at).toLocaleDateString('pt-BR')}</span>
+                      )}
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setIsEditing(true)}
+                      className="bg-stone-100 text-stone-700 p-3 rounded-xl hover:bg-stone-200 transition-colors"
+                    >
+                      <FileEdit size={18} />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(selectedNote.id)}
+                      className="bg-red-50 text-red-600 p-3 rounded-xl hover:bg-red-100 transition-colors"
+                    >
+                      <Trash2 size={18} />
+                    </button>
+                  </div>
+                </div>
+                <div className="prose prose-stone max-w-none">
+                  <p className="text-stone-700 leading-relaxed whitespace-pre-wrap">{selectedNote.content}</p>
+                </div>
+              </>
+            ) : (
+              <div className="flex flex-col items-center justify-center h-[400px] text-stone-400">
+                <FileEdit size={48} className="mb-4 opacity-50" />
+                <p className="text-lg">Selecione uma nota ou crie uma nova</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </motion.div>
   );
 }
