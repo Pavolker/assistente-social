@@ -22,7 +22,10 @@ export async function handler(event, context) {
   await initNotesTable();
 
   const { httpMethod, path, body } = event;
-  const id = path.split('/').pop(); // Extract ID from path for single resource operations
+  
+  // Extract ID from path (path is like "notes" or "notes/uuid-here")
+  const pathParts = path.split('/');
+  const id = pathParts.length > 1 ? pathParts[1] : null;
 
   // GET all notes
   if (httpMethod === 'GET' && !id) {
