@@ -23,9 +23,12 @@ export async function handler(event, context) {
 
   const { httpMethod, path, body } = event;
   
-  // Extract ID from path (path is like "notes" or "notes/uuid-here")
-  const pathParts = path.split('/');
-  const id = pathParts.length > 1 ? pathParts[1] : null;
+  // Extract ID from path (path can be "notes" or "notes/uuid" or "api/notes/uuid")
+  const pathParts = path.split('/').filter(p => p !== '');
+  // Get the last part as potential ID if we have more than 1 part
+  const id = pathParts.length > 1 && pathParts[pathParts.length - 1].match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i) 
+    ? pathParts[pathParts.length - 1] 
+    : null;
 
   // GET all notes
   if (httpMethod === 'GET' && !id) {
