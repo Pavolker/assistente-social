@@ -11,7 +11,7 @@ export async function handler(event, context) {
   try {
     const { topic } = JSON.parse(event.body);
 
-    const model = process.env.OPENROUTER_MODEL || 'openrouter/anthropic/claude-3.5-sonnet';
+    const model = process.env.OPENROUTER_MODEL || 'anthropic/claude-3.5-sonnet';
     const prompt = `Pesquise profundamente sobre o seguinte tema no contexto do Serviço Social brasileiro: ${topic}.
 Forneça um resumo estruturado, pontos principais da legislação e referências importantes.`;
     const messages = [

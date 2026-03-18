@@ -11,7 +11,7 @@ export async function handler(event, context) {
   try {
     const { message, history } = JSON.parse(event.body);
 
-    const model = process.env.OPENROUTER_MODEL || 'openrouter/anthropic/claude-3.5-sonnet';
+    const model = process.env.OPENROUTER_MODEL || 'anthropic/claude-3.5-sonnet';
     const systemPrompt = `Você é um Agente de IA especializado em Serviço Social no Brasil.
 Seu objetivo é auxiliar a Flavia, uma assistente social dedicada, em seus estudos e prática profissional.
 Seu tom deve ser profissional, empático, ético e educativo.
