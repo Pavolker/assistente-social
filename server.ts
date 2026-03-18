@@ -4,12 +4,15 @@ import dotenv from 'dotenv';
 import path from 'path';
 import multer from 'multer';
 import fs from 'fs';
-import pdfParse from 'pdf-parse';
+import { PDFParse } from 'pdf-parse';
 import { Document, Packer } from 'docx';
 import fetch from 'node-fetch';
 import { fileURLToPath } from 'url';
 
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Ensure uploads directory exists
 const uploadsDir = path.resolve(__dirname, 'uploads');
@@ -61,9 +64,6 @@ async function initDb() {
 }
 
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 const app = express();
 const port = process.env.PORT || 3001;
 
@@ -90,7 +90,7 @@ async function callOpenRouter(model: string, messages: any[]) {
     const err = await response.text();
     throw new Error(`OpenRouter error ${response.status}: ${err}`);
   }
-  const data = await response.json();
+  const data = (await response.json()) as any;
   // OpenRouter returns choices[0].message.content
   return data.choices?.[0]?.message?.content || '';
 }
@@ -155,14 +155,14 @@ if (process.env.NODE_ENV === 'production') {
 async function extractText(filePath: string, mime: string): Promise<string> {
   if (mime === 'application/pdf') {
     const data = await fs.promises.readFile(filePath);
-    const pdf = await pdfParse(data);
-    return pdf.text;
+    // Correct usage for the new PDFParse ESM library:
+    const parser = new PDFParse({ data });
+    const result = await parser.getText();
+    return result.text;
   }
   if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || mime === 'application/msword') {
-    // Simple approach: read binary and convert using docx library (limited).
-    const buffer = await fs.promises.readFile(filePath);
-    // docx library works with in‑memory document creation, not parsing. For parsing we can use 'textract' but to keep deps minimal we just return empty string.
-    // In a full implementation you would use a proper DOCX parser.
+    // DOCX parsing would require a specialized library like 'mammoth' or 'textract'.
+    // For now, we return empty string to avoid crashes.
     return '';
   }
   // Fallback for txt and others
@@ -202,7 +202,7 @@ async function embedText(text: string): Promise<number[]> {
     const err = await response.text();
     throw new Error(`Embedding error ${response.status}: ${err}`);
   }
-  const data = await response.json();
+  const data = (await response.json()) as any;
   // Assuming response.data[0].embedding is an array of numbers
   return data.data[0].embedding;
 }
@@ -288,10 +288,7 @@ app.post('/api/rag/query', async (req, res) => {
 
 // Start server after DB is ready
 initDb().then(() => {
-  // Start server after DB is ready
-initDb().then(() => {
   app.listen(port, () => {
     console.log(`Server running on port ${port}`);
   });
-});
 });
