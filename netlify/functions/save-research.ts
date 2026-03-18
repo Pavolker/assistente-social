@@ -16,7 +16,7 @@ async function embedText(text: string): Promise<number[]> {
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: 'openrouter/anthropic/claude-3.5-sonnet',
+      model: 'openai/text-embedding-ada-002',
       input: text,
     }),
   });
