@@ -30,7 +30,7 @@ import Markdown from 'react-markdown';
 import { chatWithGemini, researchTopic } from './services/gemini';
 import { getTasks, saveTasks } from './services/tasks';
 import { saveResearch } from './services/save-research';
-import { getDocuments } from './services/documents';
+import { deleteDocument, getDocumentPreview, getDocuments, searchDocuments, type DocumentSearchResult, type SavedDocument } from './services/documents';
 import { getNotes, createNote, updateNote, deleteNote, type Note } from './services/notes';
 import { STUDY_TOPICS, DAILY_QUOTES, StudyTask } from './constants';
 import { clsx, type ClassValue } from 'clsx';
@@ -258,8 +258,8 @@ function NavItem({ active, onClick, icon, label }: { active: boolean; onClick: (
 }
 
 function AIChatView() {
-  const [messages, setMessages] = useState<{ role: 'user' | 'model'; text: string }[]>([
-    { role: 'model', text: 'Olá Flavia! Sou seu assistente especializado em Serviço Social. Em que posso te ajudar hoje? Podemos discutir legislação, ética ou algum caso específico.' }
+  const [messages, setMessages] = useState<{ role: 'user' | 'assistant'; text: string }[]>([
+    { role: 'assistant', text: 'Olá Flavia! Sou seu assistente especializado em Serviço Social. Em que posso te ajudar hoje? Posso responder de forma objetiva sobre legislação, ética, políticas públicas ou um caso específico.' }
   ]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -280,16 +280,43 @@ function AIChatView() {
     setIsLoading(true);
 
     try {
-      const history = messages.map(m => ({
+      const history = messages.slice(-8).map(m => ({
         role: m.role,
         parts: [{ text: m.text }]
       }));
       
-      const response = await chatWithGemini(userMsg, history);
-      setMessages(prev => [...prev, { role: 'model', text: response.text || 'Desculpe, tive um problema ao processar sua resposta.' }]);
+      setMessages(prev => [...prev, { role: 'assistant', text: '' }]);
+
+      const response = await chatWithGemini(userMsg, history, {
+        onToken: (chunk) => {
+          setMessages(prev => {
+            const next = [...prev];
+            const lastIndex = next.length - 1;
+            if (lastIndex >= 0 && next[lastIndex]?.role === 'assistant') {
+              next[lastIndex] = {
+                ...next[lastIndex],
+                text: `${next[lastIndex].text}${chunk}`,
+              };
+            }
+            return next;
+          });
+        },
+      });
+
+      setMessages(prev => {
+        const next = [...prev];
+        const lastIndex = next.length - 1;
+        if (lastIndex >= 0 && next[lastIndex]?.role === 'assistant' && !next[lastIndex].text.trim()) {
+          next[lastIndex] = {
+            ...next[lastIndex],
+            text: response.text || 'Desculpe, tive um problema ao processar sua resposta.',
+          };
+        }
+        return next;
+      });
     } catch (error) {
       console.error(error);
-      setMessages(prev => [...prev, { role: 'model', text: 'Erro ao conectar com o assistente. Verifique sua conexão.' }]);
+      setMessages(prev => [...prev, { role: 'assistant', text: 'Erro ao conectar com o assistente. Verifique sua conexão.' }]);
     } finally {
       setIsLoading(false);
     }
@@ -327,21 +354,15 @@ function AIChatView() {
                 : "bg-brand-bg text-stone-800 border border-stone-100 rounded-tl-none"
             )}>
               <div className="markdown-body">
-                <Markdown>{msg.text}</Markdown>
+                {msg.role === 'assistant' && !msg.text.trim() && i === messages.length - 1 && isLoading ? (
+                  <p className="text-sm text-stone-500 italic">Pensando...</p>
+                ) : (
+                  <Markdown>{msg.text}</Markdown>
+                )}
               </div>
             </div>
           </div>
         ))}
-        {isLoading && (
-          <div className="flex gap-3">
-            <div className="w-8 h-8 rounded-full bg-brand-primary text-white flex items-center justify-center">
-              <Loader2 size={16} className="animate-spin" />
-            </div>
-            <div className="bg-brand-bg p-4 rounded-2xl rounded-tl-none border border-stone-100">
-              <p className="text-sm text-stone-500 italic">Pensando...</p>
-            </div>
-          </div>
-        )}
       </div>
 
       <div className="p-4 border-t border-stone-100 bg-stone-50">
@@ -576,11 +597,18 @@ function ScheduleView({ tasks, setTasks, toggleTask }: { tasks: StudyTask[]; set
     </motion.div>
   );
 }
-import { getDocuments } from './services/documents';
 
 function DocumentsView() {
-  const [documents, setDocuments] = useState<any[]>([]);
-  const [selectedDoc, setSelectedDoc] = useState<any>(null);
+  const [documents, setDocuments] = useState<SavedDocument[]>([]);
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<DocumentSearchResult[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
+  const [selectedDoc, setSelectedDoc] = useState<SavedDocument | null>(null);
+  const [preview, setPreview] = useState<{ previewText: string; hasContent: boolean } | null>(null);
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [activeFilter, setActiveFilter] = useState<'all' | 'pdf' | 'research' | 'other'>('all');
 
   useEffect(() => {
     const loadDocuments = async () => {
@@ -590,41 +618,338 @@ function DocumentsView() {
     loadDocuments();
   }, []);
 
+  const handleSearch = async (searchTerm: string = query) => {
+    const term = searchTerm.trim();
+    if (!term || isSearching) return;
+    setIsSearching(true);
+    try {
+      const data = await searchDocuments(term);
+      setResults(data.results || []);
+      setHasSearched(true);
+    } catch (error) {
+      console.error('Document search error:', error);
+      setResults([]);
+      setHasSearched(true);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const loadPreview = async (doc: SavedDocument) => {
+    setSelectedDoc(doc);
+    setPreview(null);
+    setIsPreviewLoading(true);
+    try {
+      const data = await getDocumentPreview(doc.id);
+      setPreview({
+        previewText: data.previewText || 'Sem conteúdo de pré-visualização disponível.',
+        hasContent: !!data.hasContent,
+      });
+    } catch (error) {
+      console.error('Failed to load document preview:', error);
+      setPreview({
+        previewText: 'Não foi possível carregar a pré-visualização deste documento.',
+        hasContent: false,
+      });
+    } finally {
+      setIsPreviewLoading(false);
+    }
+  };
+
+  const handleDeleteDocument = async (doc: SavedDocument) => {
+    if (!confirm(`Excluir o documento "${doc.filename}"?`)) return;
+    setIsDeleting(true);
+    try {
+      await deleteDocument(doc.id);
+      const refreshed = await getDocuments();
+      setDocuments(refreshed);
+      if (selectedDoc?.id === doc.id) {
+        setSelectedDoc(null);
+        setPreview(null);
+      }
+    } catch (error) {
+      console.error('Failed to delete document:', error);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const filteredDocuments = documents.filter((doc) => {
+    if (activeFilter === 'all') return true;
+    if (activeFilter === 'research') return doc.file_path === 'research';
+    if (activeFilter === 'pdf') return doc.mime_type?.includes('pdf') || doc.filename.toLowerCase().endsWith('.pdf');
+    return doc.file_path !== 'research' && !(doc.mime_type?.includes('pdf') || doc.filename.toLowerCase().endsWith('.pdf'));
+  });
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       className="space-y-6"
     >
-      <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm">
-        <h3 className="text-2xl font-serif font-bold mb-6">Documentos Armazenados</h3>
-        <div className="space-y-3">
-          {documents.map((doc) => (
+      <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm space-y-6">
+        <div>
+          <p className="text-sm uppercase tracking-[0.3em] text-brand-primary font-semibold mb-2">Busca de fontes</p>
+          <h3 className="text-2xl font-serif font-bold">Documentos, PDFs e sites</h3>
+          <p className="text-stone-500 mt-2 max-w-2xl">
+            Pesquise documentos reais. Esta seção retorna fontes clicáveis e a biblioteca local, não uma resposta em formato de chat.
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-3">
+          <div className="flex gap-2">
+            <div className="flex-1 relative">
+              <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-stone-400" />
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                placeholder="Buscar por lei, tema, órgão, PDF ou site..."
+                className="w-full pl-11 pr-4 py-3 rounded-xl border border-stone-200 focus:outline-none focus:ring-2 focus:ring-brand-primary/20"
+              />
+            </div>
             <button
-              key={doc.id}
-              onClick={() => setSelectedDoc(doc)}
-              className="w-full text-left p-4 rounded-xl bg-stone-50 border border-stone-100 hover:border-brand-primary/20 transition-colors"
+              onClick={() => handleSearch()}
+              disabled={isSearching || !query.trim()}
+              className="bg-brand-primary text-white px-5 py-3 rounded-xl font-medium hover:bg-brand-primary/90 transition-colors disabled:opacity-50 flex items-center gap-2"
             >
-              <p className="font-medium">{doc.filename}</p>
-              <p className="text-sm text-stone-500">{new Date(doc.uploaded_at).toLocaleDateString()}</p>
+              {isSearching ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
+              Buscar
             </button>
-          ))}
-          {documents.length === 0 && (
-            <p className="text-stone-500 text-center py-8">Nenhum documento armazenado ainda.</p>
-          )}
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            {['LOAS', 'ECA', 'Estatuto do Idoso', 'saúde mental', 'assistência social'].map((term) => (
+              <button
+                key={term}
+                onClick={() => {
+                  setQuery(term);
+                  handleSearch(term);
+                }}
+                className="px-3 py-1.5 rounded-full bg-stone-100 text-stone-600 text-sm hover:bg-stone-200 transition-colors"
+              >
+                {term}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      {selectedDoc && (
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm"
-        >
-          <h4 className="text-xl font-serif font-bold mb-4">{selectedDoc.filename}</h4>
-          <p className="text-stone-600">Documento selecionado. (Conteúdo pode ser exibido aqui futuramente)</p>
-        </motion.div>
+      {hasSearched && (
+        <div className="grid gap-4">
+          <div className="flex items-center justify-between">
+            <h4 className="text-lg font-serif font-bold">Resultados da busca</h4>
+            <p className="text-sm text-stone-500">{results.length} resultados</p>
+          </div>
+
+          {results.length === 0 ? (
+            <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm text-center text-stone-500">
+              Nenhum documento encontrado para essa busca.
+            </div>
+          ) : (
+            results.map((doc) => {
+              const body = (
+                <>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className={cn(
+                          "px-2.5 py-1 rounded-full text-[11px] uppercase tracking-wider font-semibold",
+                          doc.type === 'pdf' ? "bg-red-50 text-red-600" : doc.source === 'web' ? "bg-sky-50 text-sky-700" : "bg-emerald-50 text-emerald-700"
+                        )}>
+                          {doc.source === 'web' ? (doc.type === 'pdf' ? 'PDF da web' : 'Site') : 'Biblioteca local'}
+                        </span>
+                        <span className="text-xs text-stone-400">
+                          {doc.source === 'web' ? 'Fonte externa' : 'Arquivo salvo'}
+                        </span>
+                      </div>
+                      <h5 className="text-lg font-serif font-bold text-stone-900 truncate">{doc.title}</h5>
+                      <p className="text-sm text-stone-500 mt-1 break-all">
+                        {doc.url || doc.file_path || 'Documento local'}
+                      </p>
+                    </div>
+                    {doc.url && <ExternalLink size={18} className="text-stone-400 flex-shrink-0 mt-1" />}
+                  </div>
+
+                  {doc.snippet && (
+                    <p className="text-sm text-stone-600 mt-4 leading-relaxed">
+                      {doc.snippet}
+                    </p>
+                  )}
+                </>
+              );
+
+              return doc.url ? (
+                <a
+                  key={doc.id}
+                  href={doc.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block bg-white p-6 rounded-3xl border border-stone-200 shadow-sm hover:border-brand-primary/20 hover:shadow-md transition-all"
+                >
+                  {body}
+                </a>
+              ) : (
+                <div
+                  key={doc.id}
+                  className="block bg-white p-6 rounded-3xl border border-stone-200 shadow-sm"
+                >
+                  {body}
+                </div>
+              );
+            })
+          )}
+        </div>
       )}
+
+      <div className="bg-white p-8 rounded-3xl border border-stone-200 shadow-sm space-y-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h4 className="text-xl font-serif font-bold">Documentos salvos</h4>
+            <p className="text-sm text-stone-500">{documents.length} itens persistidos no banco</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {[
+              { key: 'all', label: 'Todos' },
+              { key: 'research', label: 'Pesquisas' },
+              { key: 'pdf', label: 'PDFs' },
+              { key: 'other', label: 'Outros' },
+            ].map((filter) => (
+              <button
+                key={filter.key}
+                onClick={() => setActiveFilter(filter.key as typeof activeFilter)}
+                className={cn(
+                  "px-3 py-1.5 rounded-full text-sm transition-colors",
+                  activeFilter === filter.key
+                    ? "bg-brand-primary text-white"
+                    : "bg-stone-100 text-stone-600 hover:bg-stone-200"
+                )}
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-[1.1fr_0.9fr] gap-6">
+          <div className="space-y-3">
+            {filteredDocuments.map((doc) => {
+              const isSelected = selectedDoc?.id === doc.id;
+              const isResearch = doc.file_path === 'research';
+              const isPdf = doc.mime_type?.includes('pdf') || doc.filename.toLowerCase().endsWith('.pdf');
+              return (
+                <button
+                  key={doc.id}
+                  onClick={() => loadPreview(doc)}
+                  className={cn(
+                    "w-full text-left p-4 rounded-2xl border transition-all",
+                    isSelected
+                      ? "bg-brand-primary text-white border-brand-primary shadow-lg shadow-brand-primary/20"
+                      : "bg-stone-50 border-stone-100 hover:border-brand-primary/20"
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className={cn(
+                          "px-2.5 py-1 rounded-full text-[11px] uppercase tracking-wider font-semibold",
+                          isResearch
+                            ? (isSelected ? "bg-white/20 text-white" : "bg-emerald-50 text-emerald-700")
+                            : isPdf
+                              ? (isSelected ? "bg-white/20 text-white" : "bg-red-50 text-red-600")
+                              : (isSelected ? "bg-white/20 text-white" : "bg-sky-50 text-sky-700")
+                        )}>
+                          {isResearch ? 'Pesquisa salva' : isPdf ? 'PDF' : 'Documento'}
+                        </span>
+                        <span className={cn("text-xs", isSelected ? "text-white/80" : "text-stone-400")}>
+                          {doc.uploaded_at ? new Date(doc.uploaded_at).toLocaleDateString('pt-BR') : 'Sem data'}
+                        </span>
+                      </div>
+                      <p className={cn("font-medium truncate", isSelected ? "text-white" : "text-stone-900")}>
+                        {doc.filename}
+                      </p>
+                      <p className={cn("text-sm mt-1", isSelected ? "text-white/80" : "text-stone-500")}>
+                        {doc.file_path || 'Arquivo salvo'}
+                      </p>
+                    </div>
+                    <ExternalLink size={16} className={cn("flex-shrink-0 mt-1", isSelected ? "text-white/80" : "text-stone-400")} />
+                  </div>
+                </button>
+              );
+            })}
+            {filteredDocuments.length === 0 && (
+              <p className="text-stone-500 text-center py-8">Nenhum documento salvo corresponde a este filtro.</p>
+            )}
+          </div>
+
+          <div className="bg-stone-50 rounded-3xl border border-stone-100 p-6 min-h-[260px]">
+            {selectedDoc ? (
+              <div className="space-y-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.3em] text-brand-primary font-semibold mb-2">Pré-visualização</p>
+                    <h5 className="text-xl font-serif font-bold">{selectedDoc.filename}</h5>
+                    <p className="text-sm text-stone-500 mt-1">
+                      {selectedDoc.uploaded_at ? new Date(selectedDoc.uploaded_at).toLocaleDateString('pt-BR') : 'Sem data'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleDeleteDocument(selectedDoc)}
+                    disabled={isDeleting}
+                    className="p-2 rounded-xl bg-red-50 text-red-600 hover:bg-red-100 transition-colors disabled:opacity-50"
+                    title="Excluir documento"
+                  >
+                    <Trash2 size={18} />
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {selectedDoc.file_path && selectedDoc.file_path !== 'research' && (
+                    <a
+                      href={`/api/documents/${selectedDoc.id}/download`}
+                      className="px-3 py-1.5 rounded-full bg-brand-primary text-white text-sm font-medium hover:bg-brand-primary/90 transition-colors"
+                    >
+                      Baixar arquivo
+                    </a>
+                  )}
+                  {selectedDoc.file_path === 'research' && (
+                    <a
+                      href={`/api/documents/${selectedDoc.id}/download`}
+                      className="px-3 py-1.5 rounded-full bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-500 transition-colors"
+                    >
+                      Baixar pesquisa
+                    </a>
+                  )}
+                </div>
+
+                <div className="bg-white rounded-2xl border border-stone-200 p-4">
+                  {isPreviewLoading ? (
+                    <div className="flex items-center gap-2 text-stone-500">
+                      <Loader2 size={16} className="animate-spin" />
+                      Carregando pré-visualização...
+                    </div>
+                  ) : preview ? (
+                    <p className="text-sm text-stone-700 whitespace-pre-wrap leading-relaxed">
+                      {preview.previewText}
+                    </p>
+                  ) : (
+                    <p className="text-sm text-stone-500">Selecione um documento para ver a pré-visualização.</p>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="h-full min-h-[260px] flex flex-col items-center justify-center text-stone-400 text-center">
+                <FileEdit size={48} className="mb-4 opacity-50" />
+                <p className="text-lg">Selecione um documento salvo</p>
+                <p className="text-sm mt-2 max-w-sm">
+                  Aqui você vê o conteúdo ou um resumo extraído do documento salvo, além de poder excluí-lo.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </motion.div>
   );
 }

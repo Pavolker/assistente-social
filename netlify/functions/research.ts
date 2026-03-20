@@ -41,7 +41,7 @@ Forneça um resumo estruturado, pontos principais da legislação e referências
       throw new Error(`OpenRouter error ${response.status}: ${err}`);
     }
 
-    const data = await response.json();
+    const data = (await response.json()) as any;
     const reply = data.choices?.[0]?.message?.content || '';
 
     return {

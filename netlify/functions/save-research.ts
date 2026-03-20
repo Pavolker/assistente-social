@@ -24,7 +24,7 @@ async function embedText(text: string): Promise<number[]> {
     const err = await response.text();
     throw new Error(`Embedding error ${response.status}: ${err}`);
   }
-  const data = await response.json();
+  const data = (await response.json()) as any;
   return data.data[0].embedding;
 }
 

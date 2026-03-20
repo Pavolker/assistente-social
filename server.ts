@@ -78,54 +78,451 @@ const port = process.env.PORT || 3001;
 
 app.use(express.json());
 
-// Helper to call OpenRouter API
-async function callOpenRouter(model: string, messages: any[]) {
+type ChatMessage = {
+  role: 'system' | 'user' | 'assistant' | 'model';
+  content?: string;
+  parts?: { text?: string }[];
+  text?: string;
+};
+
+function normalizeHistory(history: ChatMessage[] = []) {
+  return history.slice(-8).flatMap((item) => {
+    const role = item.role === 'model' ? 'assistant' : item.role;
+    const text = item.content || item.parts?.[0]?.text || item.text || '';
+    if (!text.trim()) return [];
+    if (role !== 'user' && role !== 'assistant') return [];
+    return [{ role, content: text }];
+  });
+}
+
+async function streamOpenRouterChat(
+  model: string,
+  messages: any[],
+  onToken: (chunk: string) => void,
+  options: { maxTokens?: number; temperature?: number; timeoutMs?: number } = {}
+) {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     throw new Error('OPENROUTER_API_KEY not set in environment');
   }
-  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-    }),
-  });
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`OpenRouter error ${response.status}: ${err}`);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 45000);
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        messages,
+        stream: true,
+        max_tokens: options.maxTokens ?? 900,
+        temperature: options.temperature ?? 0.3,
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`OpenRouter error ${response.status}: ${err}`);
+    }
+
+    if (!response.body) {
+      throw new Error('OpenRouter stream unavailable');
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let fullText = '';
+
+    for await (const chunk of response.body as any) {
+      buffer += decoder.decode(chunk, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const payload = trimmed.slice(5).trim();
+        if (!payload || payload === '[DONE]') {
+          continue;
+        }
+
+        try {
+          const parsed = JSON.parse(payload) as any;
+          const delta = parsed.choices?.[0]?.delta?.content || parsed.choices?.[0]?.message?.content || '';
+          if (delta) {
+            fullText += delta;
+            onToken(delta);
+          }
+        } catch {
+          // Ignore malformed SSE payloads and keep streaming.
+        }
+      }
+    }
+
+    const tail = buffer.trim();
+    if (tail.startsWith('data:')) {
+      const payload = tail.slice(5).trim();
+      if (payload && payload !== '[DONE]') {
+        try {
+          const parsed = JSON.parse(payload) as any;
+          const delta = parsed.choices?.[0]?.delta?.content || parsed.choices?.[0]?.message?.content || '';
+          if (delta) {
+            fullText += delta;
+            onToken(delta);
+          }
+        } catch {
+          // Ignore malformed tail payloads.
+        }
+      }
+    }
+
+    return fullText;
+  } finally {
+    clearTimeout(timeout);
   }
-  const data = (await response.json()) as any;
-  // OpenRouter returns choices[0].message.content
-  return data.choices?.[0]?.message?.content || '';
+}
+
+// Helper to call OpenRouter API
+async function callOpenRouter(model: string, messages: any[], options: { maxTokens?: number; temperature?: number; timeoutMs?: number } = {}) {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    throw new Error('OPENROUTER_API_KEY not set in environment');
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 45000);
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        messages,
+        max_tokens: options.maxTokens ?? 900,
+        temperature: options.temperature ?? 0.3,
+      }),
+    });
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`OpenRouter error ${response.status}: ${err}`);
+    }
+    const data = (await response.json()) as any;
+    // OpenRouter returns choices[0].message.content
+    return data.choices?.[0]?.message?.content || '';
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // Chat endpoint – uses a system prompt for the assistant role
 app.post('/api/chat', async (req, res) => {
   const { message, history } = req.body;
-  const model = process.env.OPENROUTER_MODEL || 'openrouter/anthropic/claude-3.5-sonnet';
+  const model = process.env.OPENROUTER_CHAT_MODEL || process.env.OPENROUTER_MODEL || 'openai/gpt-4o-mini';
   const systemPrompt = `Você é um Agente de IA especializado em Serviço Social no Brasil.
 Seu objetivo é auxiliar a Flavia, uma assistente social dedicada, em seus estudos e prática profissional.
-Seu tom deve ser profissional, empático, ético e educativo.
+Seu tom deve ser profissional, empático, ético, objetivo e educativo.
 Você domina temas como: Seguridade Social (Saúde, Assistência Social, Previdência), LOAS, ECA, Estatuto do Idoso, Estatuto da Pessoa com Deficiência, Ética Profissional, Projeto Ético-Político, e instrumentais técnico-operativos.
-Sempre cite legislações quando relevante.
+Responda de forma direta, com linguagem clara e respostas curtas quando possível.
+Sempre cite legislações quando relevante e faça perguntas objetivas se faltar informação.
 Responda em Português do Brasil.`;
 
   const messages = [
     { role: 'system', content: systemPrompt },
-    ...(history || []),
+    ...normalizeHistory(history || []),
     { role: 'user', content: message },
   ];
 
   try {
-    const reply = await callOpenRouter(model, messages);
-    res.json({ text: reply });
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    (res as any).flushHeaders?.();
+
+    let started = false;
+    const reply = await streamOpenRouterChat(model, messages, (chunk) => {
+      started = true;
+      res.write(chunk);
+    }, { maxTokens: 900, temperature: 0.3 });
+
+    if (!started) {
+      res.end(reply);
+      return;
+    }
+
+    res.end();
   } catch (error: any) {
     console.error('Chat error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message || 'Internal Server Error' });
+      return;
+    }
+    res.end();
+  }
+});
+
+app.get('/api/documents', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, filename, mime_type, size_bytes, uploaded_at, file_path FROM documents ORDER BY uploaded_at DESC'
+    );
+    res.json(rows.map((row: any) => ({
+      id: row.id,
+      filename: row.filename,
+      mime_type: row.mime_type,
+      size_bytes: row.size_bytes,
+      uploaded_at: row.uploaded_at,
+      file_path: row.file_path,
+    })));
+  } catch (error: any) {
+    console.error('Get documents error:', error);
+    res.status(500).json({ error: error.message || 'Internal Server Error' });
+  }
+});
+
+app.get('/api/documents/:id/preview', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rows } = await pool.query(
+      'SELECT id, filename, mime_type, size_bytes, uploaded_at, file_path FROM documents WHERE id = $1',
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+
+    const doc = rows[0];
+    const chunks = await pool.query(
+      'SELECT content FROM doc_chunks WHERE document_id = $1 ORDER BY chunk_index ASC LIMIT 3',
+      [id]
+    );
+
+    const previewText = chunks.rows.map((row: any) => row.content).join('\n\n').trim();
+    res.json({
+      id: doc.id,
+      filename: doc.filename,
+      mime_type: doc.mime_type,
+      size_bytes: doc.size_bytes,
+      uploaded_at: doc.uploaded_at,
+      file_path: doc.file_path,
+      previewText: previewText || 'Sem conteúdo de pré-visualização disponível.',
+      hasContent: chunks.rows.length > 0,
+    });
+  } catch (error: any) {
+    console.error('Document preview error:', error);
+    res.status(500).json({ error: error.message || 'Internal Server Error' });
+  }
+});
+
+app.delete('/api/documents/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query('DELETE FROM documents WHERE id = $1', [id]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error('Document delete error:', error);
+    res.status(500).json({ error: error.message || 'Internal Server Error' });
+  }
+});
+
+app.post('/api/save-research', async (req, res) => {
+  try {
+    const { query, result } = req.body;
+    if (!query || !result) {
+      return res.status(400).json({ error: 'Query and result are required' });
+    }
+
+    const docResult = await pool.query(
+      `INSERT INTO documents (filename, mime_type, size_bytes, file_path)
+       VALUES ($1, $2, $3, $4) RETURNING id`,
+      [`research-${String(query).slice(0, 50)}.txt`, 'text/plain', String(result).length, 'research']
+    );
+    const docId = docResult.rows[0].id;
+
+    const chunks = chunkText(String(result));
+    for (let i = 0; i < chunks.length; i++) {
+      const embedding = await embedText(chunks[i]);
+      await pool.query(
+        `INSERT INTO doc_chunks (document_id, chunk_index, content, embedding)
+         VALUES ($1, $2, $3, $4)`,
+        [docId, i, chunks[i], JSON.stringify(embedding)]
+      );
+    }
+
+    res.json({ success: true, documentId: docId });
+  } catch (error: any) {
+    console.error('Save research error:', error);
+    res.status(500).json({ error: error.message || 'Internal Server Error' });
+  }
+});
+
+function classifyDocumentType(urlOrName: string, mimeType?: string) {
+  const value = `${urlOrName} ${mimeType || ''}`.toLowerCase();
+  if (value.includes('pdf')) return 'pdf';
+  return 'site';
+}
+
+function sanitizeSearchQuery(query: string) {
+  return query.trim().replace(/\s+/g, ' ');
+}
+
+async function searchWebDocuments(query: string) {
+  const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
+  const response = await fetch(searchUrl, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Web search error ${response.status}`);
+  }
+
+  const html = await response.text();
+  const results: Array<{ id: string; title: string; url?: string; snippet?: string; type: 'pdf' | 'site'; source: 'web' }> = [];
+  const resultBlockRegex = /<li class="b_algo"[\s\S]*?<h2[^>]*><a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a><\/h2>[\s\S]*?<div class="b_caption"><p class="b_lineclamp2">([\s\S]*?)<\/p>/g;
+  let blockMatch: RegExpExecArray | null;
+  while ((blockMatch = resultBlockRegex.exec(html)) !== null && results.length < 8) {
+    const url = blockMatch[1].replace(/&amp;/g, '&');
+    const title = blockMatch[2]
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const snippet = blockMatch[3]
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    results.push({
+      id: `web-${results.length + 1}`,
+      title,
+      url,
+      snippet,
+      type: url.toLowerCase().includes('.pdf') ? 'pdf' : 'site',
+      source: 'web',
+    });
+  }
+
+  return results;
+}
+
+async function searchLocalDocuments(query: string) {
+  const searchTerm = `%${sanitizeSearchQuery(query).toLowerCase()}%`;
+  const { rows } = await pool.query(
+    `
+      SELECT DISTINCT ON (d.id)
+        d.id,
+        d.filename,
+        d.mime_type,
+        d.file_path,
+        d.uploaded_at,
+        COALESCE(
+          NULLIF(
+            regexp_replace(
+              substring(lower(c.content) from 1 for 240),
+              E'\\s+',
+              ' ',
+              'g'
+            ),
+            ''
+          ),
+          ''
+        ) AS snippet
+      FROM documents d
+      LEFT JOIN doc_chunks c ON c.document_id = d.id
+      WHERE lower(d.filename) LIKE $1
+         OR lower(c.content) LIKE $1
+      ORDER BY d.id, d.uploaded_at DESC
+      LIMIT 20
+    `,
+    [searchTerm]
+  );
+
+  return rows.map((row: any) => ({
+    id: row.id,
+    title: row.filename,
+    url: row.file_path ? `/api/documents/${row.id}/download` : undefined,
+    snippet: row.snippet || '',
+    type: classifyDocumentType(row.filename, row.mime_type),
+    source: 'local' as const,
+    mime_type: row.mime_type,
+    file_path: row.file_path,
+    uploaded_at: row.uploaded_at,
+  }));
+}
+
+app.get('/api/documents/search', async (req, res) => {
+  try {
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (!q) {
+      const localDocuments = await searchLocalDocuments('');
+      return res.json({ query: q, results: [], localDocuments });
+    }
+
+    const [localDocuments, webResults] = await Promise.all([
+      searchLocalDocuments(q),
+      searchWebDocuments(q).catch((error) => {
+        console.error('Web search error:', error);
+        return [];
+      }),
+    ]);
+
+    const results = [...localDocuments, ...webResults];
+
+    res.json({
+      query: q,
+      results,
+      localDocuments,
+      webResults,
+    });
+  } catch (error: any) {
+    console.error('Document search error:', error);
+    res.status(500).json({ error: error.message || 'Internal Server Error' });
+  }
+});
+
+app.get('/api/documents/:id/download', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rows } = await pool.query('SELECT filename, file_path, mime_type FROM documents WHERE id = $1', [id]);
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+
+    const doc = rows[0];
+    if (doc.file_path === 'research') {
+      const contentResult = await pool.query(
+        'SELECT content FROM doc_chunks WHERE document_id = $1 ORDER BY chunk_index ASC',
+        [id]
+      );
+      const text = contentResult.rows.map((row: any) => row.content).join('\n');
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${doc.filename || 'research.txt'}"`);
+      return res.send(text);
+    }
+
+    if (!doc.file_path) {
+      return res.status(404).json({ error: 'Document file unavailable' });
+    }
+
+    return res.download(doc.file_path, doc.filename);
+  } catch (error: any) {
+    console.error('Document download error:', error);
     res.status(500).json({ error: error.message || 'Internal Server Error' });
   }
 });
