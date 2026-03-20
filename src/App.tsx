@@ -675,10 +675,13 @@ function DocumentsView() {
   };
 
   const filteredDocuments = documents.filter((doc) => {
+    const filename = String(doc.filename || '');
+    const filePath = String(doc.file_path || '');
+    const mimeType = String(doc.mime_type || '');
     if (activeFilter === 'all') return true;
-    if (activeFilter === 'research') return doc.file_path === 'research';
-    if (activeFilter === 'pdf') return doc.mime_type?.includes('pdf') || doc.filename.toLowerCase().endsWith('.pdf');
-    return doc.file_path !== 'research' && !(doc.mime_type?.includes('pdf') || doc.filename.toLowerCase().endsWith('.pdf'));
+    if (activeFilter === 'research') return filePath === 'research';
+    if (activeFilter === 'pdf') return mimeType.includes('pdf') || filename.toLowerCase().endsWith('.pdf');
+    return filePath !== 'research' && !(mimeType.includes('pdf') || filename.toLowerCase().endsWith('.pdf'));
   });
 
   return (
@@ -836,8 +839,11 @@ function DocumentsView() {
           <div className="space-y-3">
             {filteredDocuments.map((doc) => {
               const isSelected = selectedDoc?.id === doc.id;
-              const isResearch = doc.file_path === 'research';
-              const isPdf = doc.mime_type?.includes('pdf') || doc.filename.toLowerCase().endsWith('.pdf');
+              const filename = String(doc.filename || 'Documento sem nome');
+              const filePath = String(doc.file_path || '');
+              const mimeType = String(doc.mime_type || '');
+              const isResearch = filePath === 'research';
+              const isPdf = mimeType.includes('pdf') || filename.toLowerCase().endsWith('.pdf');
               return (
                 <button
                   key={doc.id}
@@ -867,10 +873,10 @@ function DocumentsView() {
                         </span>
                       </div>
                       <p className={cn("font-medium truncate", isSelected ? "text-white" : "text-stone-900")}>
-                        {doc.filename}
+                        {filename}
                       </p>
                       <p className={cn("text-sm mt-1", isSelected ? "text-white/80" : "text-stone-500")}>
-                        {doc.file_path || 'Arquivo salvo'}
+                        {filePath || 'Arquivo salvo'}
                       </p>
                     </div>
                     <ExternalLink size={16} className={cn("flex-shrink-0 mt-1", isSelected ? "text-white/80" : "text-stone-400")} />
@@ -889,7 +895,7 @@ function DocumentsView() {
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <p className="text-xs uppercase tracking-[0.3em] text-brand-primary font-semibold mb-2">Pré-visualização</p>
-                    <h5 className="text-xl font-serif font-bold">{selectedDoc.filename}</h5>
+                    <h5 className="text-xl font-serif font-bold">{String(selectedDoc.filename || 'Documento sem nome')}</h5>
                     <p className="text-sm text-stone-500 mt-1">
                       {selectedDoc.uploaded_at ? new Date(selectedDoc.uploaded_at).toLocaleDateString('pt-BR') : 'Sem data'}
                     </p>
